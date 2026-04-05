@@ -11,74 +11,82 @@ const MODE = {
     NetworkSecurityTrustManager: true
 }
 
+
 // load Java Library
 const loadJava = (name) => {
     try {
         const myClass = Java.use(name);
         console.log("[+] Class:", name);
         return myClass;
-    } catch (e) {
-        console.log("[✘] Error loading", name + ":", e.message);
+    } catch(e) {
+        console.log("[✘] Error loading:", name, "-", e.message);
         return null;
     }
 };
 
-// load Binary
-const loadSo = (name) => {
+// load Binary ( https://codeshare.frida.re/@Eltion/facebook-ssl-pinning-bypass/ )
+function waitForModules(moduleName) {
+    return new Promise(resolve => {
+        const interval = setInterval(() => {
+            const module = Process.findModuleByName(moduleName);
+            if (module != null) {
+                console.log("[+] Module:", moduleName);
+                console.log("[+] Path:", module.path);
+                clearInterval(interval);
+                resolve(module);
+            }
+        }, 300);
+    });
+}
+
+
+// hook proxygen SSLVerification
+function hook_proxygen_SSLVerification(library) {
+
+    const functionName = "verifyWithMetrics"
+
     try {
-        const module = Process.findModuleByName(name);
-        if (module) {
-            console.log("[+] Module:", name);
-            console.log("[+] Path:", module.path);
-            return module;
+    
+        if (!library) {
+            console.log("[!] Library not found:", library);
+            return;
         }
-        console.log("[ᵎ!ᵎ] Module not loaded:", name);
-        return null;
-    } catch (e) {
-        console.log("[✘] Error:", e.message);
-        return null;
-    }
-};
-
-function hookSSL() {
-    try {
-
-        /* /data/data/com.facebook.katana/lib-compressed/libcoldstart.so */
-        var module = loadSo("libcoldstart.so");
-        if (!module) return;
 
         // Find by export
-        var exports = module.enumerateExports();
+        var target = library.enumerateExports().find(
+            exports => exports.name.includes(functionName)
+        );
 
-        for (var i = 0; i < exports.length; i++) {
-            var exp = exports[i];
-
-            if (exp.name.indexOf("verifyWithMetrics") !== -1) {
-                var addr = exp.address;
-                var symbol = exp.name;
-
-                console.log(`[+] Symbol: ${symbol.substring(0, 80)}...`);
-                console.log(`[+] Address: ${addr}`);
-
-                // Patch
-                Interceptor.attach(addr, {
-                    onLeave: function(retval) {
-                        retval.replace(ptr(1));
-                    }
-                });
-
-                console.log(`[✓] Status: PATCHED\n`);
-                return;
-            }
+        if (!target) {
+            console.log(`[✘] ${functionName} not found\n`);
+            return;
         }
+
+        console.log("[+] Found:", target.name);
+        console.log("[+] Address:", target.address);
+
+        Interceptor.attach(target.address, {
+            onLeave: retvalue => retvalue.replace(ptr(1))
+        });
+
+        console.log(`[✓] Patched: ${functionName}\n`);
+
     } catch (e) {
-        console.log("[✘] Error in hookSSL:", e.message);
+        console.log("[✘] Error in proxygen SSLVerification:", e.message);
     }
 }
 
+
+/* /data/data/{packageName}/lib-compressed/*.so */
+waitForModules("libcoldstart.so").then((lib) => {
+    hook_proxygen_SSLVerification(lib);
+});
+
+
 setTimeout(function() {
-    hookSSL();
+
     console.log("\n--- Meta Bypass Loaded ---\n");
+
     if (Java.available) {
         console.log("[*] Java available");
         Java.perform(function() {
